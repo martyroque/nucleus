@@ -69,38 +69,91 @@ function useStore<S extends Store>(store: StoreConstructable<S>): S {
  * @returns {V} The current value of the atom
  *
  * @example
- * // Using with a store
- * function UserProfile() {
- *   const userStore = useStore(UserStore);
- *   const username = useValue(userStore.username);
- *   const isLoggedIn = useValue(userStore.isLoggedIn);
- *
- *   if (!isLoggedIn) {
- *     return <LoginForm />;
- *   }
- *
- *   return <div>Welcome, {username}!</div>;
- * }
- *
- * @remarks
- * - For better performance, only use this hook for the specific atoms you need in a component.
- * - To access multiple atoms efficiently, consider using them individually or use `useNucleux`.
+ * // Using with an atom directly
+ * const userStore = useStore(UserStore);
+ * const username = useValue(userStore.username);
  */
-function useValue<V>(atom: ReadOnlyAtomInterface<V>): V {
-  const subscribe = useCallback(
-    (onStoreChange: () => void) => {
-      const subId = atom.subscribe(onStoreChange);
+function useValue<V>(atom: ReadOnlyAtomInterface<V>): V;
 
-      return () => {
-        atom.unsubscribe(subId);
-      };
-    },
-    [atom],
-  );
+/**
+ * Directly accesses an atom value from a store by key name.
+ *
+ * This overload allows accessing a specific atom from a store without
+ * explicitly retrieving the store instance first.
+ *
+ * @template S - The store type that extends the base Store class
+ * @template K - The key of the atom in the store
+ * @param {StoreConstructable<S>} store - The store class constructor
+ * @param {K} atomKey - The key of the atom to access
+ * @returns {S[K] extends AtomInterface<infer V> ? V : never} The current value of the atom
+ *
+ * @example
+ * // Direct access to an atom value
+ * const username = useValue(UserStore, "username");
+ * const isLoggedIn = useValue(UserStore, "isLoggedIn");
+ */
+function useValue<S extends Store, K extends keyof S>(
+  store: StoreConstructable<S>,
+  atomKey: K,
+): S[K] extends ReadOnlyAtomInterface<infer V> ? V : never;
 
-  const getter = useCallback(() => atom.value, [atom.value]);
+function useValue<V, S extends Store, K extends keyof S>(
+  atomOrStore: ReadOnlyAtomInterface<V> | StoreConstructable<S>,
+  atomKey?: K,
+): V | (S[K] extends ReadOnlyAtomInterface<infer V> ? V : never) {
+  // Case 1: Direct atom usage
+  if (isAtom(atomOrStore) && atomOrStore instanceof Atom) {
+    const atom = atomOrStore as ReadOnlyAtomInterface<V>;
 
-  return useSyncExternalStore(subscribe, getter);
+    const subscribe = useCallback(
+      (onStoreChange: () => void) => {
+        const subId = atom.subscribe(onStoreChange);
+        return () => {
+          atom.unsubscribe(subId);
+        };
+      },
+      [atom],
+    );
+
+    const getter = useCallback(() => atom.value, [atom.value]);
+
+    return useSyncExternalStore(subscribe, getter);
+  }
+
+  // Case 2: Store + key usage
+  if (atomKey !== undefined) {
+    const container = Container.getInstance();
+    const storeInstance = container.get(atomOrStore as StoreConstructable<S>);
+
+    // Get the atom at the specified key
+    const atom = storeInstance[atomKey];
+
+    // Check if it's an atom
+    if (!isAtom(atom) || !(atom instanceof Atom)) {
+      throw new Error(`Property "${String(atomKey)}" is not an atom`);
+    }
+
+    const typedAtom = atom as ReadOnlyAtomInterface<V>;
+
+    const subscribe = useCallback(
+      (onStoreChange: () => void) => {
+        const subId = typedAtom.subscribe(onStoreChange);
+
+        return () => {
+          typedAtom.unsubscribe(subId);
+          // We're only using this atom, so can release the store reference
+          container.remove(atomOrStore as StoreConstructable<S>);
+        };
+      },
+      [typedAtom],
+    );
+
+    const getter = useCallback(() => typedAtom.value, [typedAtom.value]);
+
+    return useSyncExternalStore(subscribe, getter);
+  }
+
+  throw new Error('Invalid arguments to useValue');
 }
 
 /**
